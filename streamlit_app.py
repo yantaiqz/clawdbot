@@ -268,3 +268,78 @@ components.html(scroll_js, height=0, width=0)
 control_container = st.container()
 
 with control_container:
+    col1, col2, col3 = st.columns([1, 2, 1])
+    with col2:
+        if st.session_state.simulation_active:
+            if st.button("⏹ 停止模拟 (Pause)", use_container_width=True, type="secondary"):
+                st.session_state.simulation_active = False
+                st.rerun()
+        else:
+            if st.button("▶️ 开始 GLM 驱动模拟", use_container_width=True, type="primary"):
+                st.session_state.simulation_active = True
+                st.rerun()
+
+if st.session_state.simulation_active:
+    wait_seconds = random.randint(5, 15) 
+    prog_bar = status_placeholder.progress(0, text="Agents 正在思考中...")
+    
+    for i in range(wait_seconds):
+        time.sleep(1)
+        prog_bar.progress((i + 1) / wait_seconds, text=f"下一位专家正在输入... ({wait_seconds - i}s)")
+    
+    status_placeholder.empty()
+
+    new_turn = generate_next_turn(st.session_state.messages)
+    
+    if new_turn:
+        agent_id = new_turn.get("agent_id")
+        if agent_id not in AGENTS:
+            agent_id = random.choice(list(AGENTS.keys()))
+        
+        st.session_state.messages.append({
+            "agent_id": agent_id,
+            "role_name": AGENTS[agent_id]["name"],
+            "content": new_turn.get("content")
+        })
+        st.rerun()
+    else:
+        st.session_state.simulation_active = False
+        st.error("生成回复失败，模拟已暂停。")
+
+# -------------------------------------------------------------
+# --- 7. 访客统计 ---
+# -------------------------------------------------------------
+
+DB_FILE = "visit_stats_glm.db"
+
+def track_and_get_stats():
+    try:
+        conn = sqlite3.connect(DB_FILE, check_same_thread=False)
+        c = conn.cursor()
+        c.execute('''CREATE TABLE IF NOT EXISTS daily_traffic (date TEXT PRIMARY KEY, pv_count INTEGER DEFAULT 0)''')
+        c.execute('''CREATE TABLE IF NOT EXISTS visitors (visitor_id TEXT PRIMARY KEY, first_visit_date TEXT, last_visit_date TEXT)''')
+        try: c.execute("ALTER TABLE visitors ADD COLUMN last_visit_date TEXT")
+        except: pass
+
+        today_str = datetime.datetime.utcnow().date().isoformat()
+        if "visitor_id" not in st.session_state: st.session_state["visitor_id"] = str(uuid.uuid4())
+        
+        if "has_counted" not in st.session_state:
+            c.execute("INSERT OR IGNORE INTO daily_traffic (date, pv_count) VALUES (?, 0)", (today_str,))
+            c.execute("UPDATE daily_traffic SET pv_count = pv_count + 1 WHERE date=?", (today_str,))
+            c.execute("INSERT OR REPLACE INTO visitors (visitor_id, first_visit_date, last_visit_date) VALUES (?, ?, ?)", 
+                      (st.session_state["visitor_id"], today_str, today_str))
+            conn.commit()
+            st.session_state["has_counted"] = True
+
+        c.execute("SELECT pv_count FROM daily_traffic WHERE date=?", (today_str,))
+        pv = c.fetchone()[0]
+        c.execute("SELECT COUNT(*) FROM visitors")
+        uv = c.fetchone()[0]
+        conn.close()
+        return uv, pv
+    except:
+        return 0, 0
+
+uv, pv = track_and_get_stats()
+st.markdown(f"<div style='text-align:center;color:#ccc;font-size:12px;margin-top:20px;'>👀 PV: {pv} | 👥 UV: {uv}</div>", unsafe_allow_html=True)
