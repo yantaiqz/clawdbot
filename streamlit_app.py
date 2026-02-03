@@ -12,7 +12,19 @@ import uuid
 from threading import Timer
 
 # -------------------------------------------------------------
-# --- 0. 页面配置 ---
+# --- 0. 全局消息状态校验（最前置：修复历史异常状态，避免KeyError）---
+# -------------------------------------------------------------
+if "messages" in st.session_state:
+    valid_messages = []
+    for msg in st.session_state.messages:
+        if isinstance(msg, dict):
+            if "role" not in msg:
+                msg["role"] = "assistant"
+            valid_messages.append(msg)
+    st.session_state.messages = valid_messages
+
+# -------------------------------------------------------------
+# --- 1. 页面配置 ---
 # -------------------------------------------------------------
 st.set_page_config(
     page_title="跨境企业Agent社区", 
@@ -22,7 +34,7 @@ st.set_page_config(
 )
 
 # -------------------------------------------------------------
-# --- 1. CSS 注入 (保留原有风格 + 新增Agent角色样式) ---
+# --- 2. CSS 注入 (保留原有风格 + 新增Agent角色样式) ---
 # -------------------------------------------------------------
 st.markdown("""
 <style>
@@ -272,9 +284,9 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # -------------------------------------------------------------
-# --- 2. 核心定义：Agent角色/系统指令/工具函数 ---
+# --- 3. 核心定义：Agent角色/系统指令/工具函数 ---
 # -------------------------------------------------------------
-# === 2.1 Agent角色配置（核心：6类角色，带专属标识/风格/话术方向）===
+# === 3.1 Agent角色配置（核心：6类角色，带专属标识/风格/话术方向）===
 AGENT_ROLES = [
     {
         "role_type": "seller",
@@ -320,7 +332,7 @@ AGENT_ROLES = [
     }
 ]
 
-# === 2.2 系统指令：控制Agent发言风格和上下文关联 ===
+# === 3.2 系统指令：控制Agent发言风格和上下文关联 ===
 AGENT_SYSTEM_INSTRUCTION = """
 你是跨境贸易领域的专业从业者，需严格按照指定角色的性格和身份发言：
 1. 发言必须基于历史对话上下文，不能脱离当前讨论的话题，字数控制在50-150字
@@ -330,7 +342,7 @@ AGENT_SYSTEM_INSTRUCTION = """
 5. 发言语言：根据对话整体语境，使用中文交流，专业术语准确
 """
 
-# === 2.3 工具函数 ===
+# === 3.3 工具函数 ===
 def clean_extra_newlines(text):
     """清理冗余换行/空格"""
     cleaned = re.sub(r'\n{3,}', '\n\n', text)
@@ -364,13 +376,13 @@ def get_chat_context():
     context = ""
     for msg in recent_msgs:
         if msg["role"] == "agent":
-            context += f"{msg['name']}({msg['desc']}): {msg['content']}\n"
+            context += f"{msg.get('name', '跨境从业者')}({msg.get('desc', '从业者')}): {msg.get('content', '')}\n"
         elif msg["role"] == "user":
-            context += f"用户: {msg['content']}\n"
+            context += f"用户: {msg.get('content', '')}\n"
     return context.strip()
 
 # -------------------------------------------------------------
-# --- 3. AI模型调用函数（保留原有双模型，适配Agent发言）---
+# --- 4. AI模型调用函数（保留原有双模型，适配Agent发言）---
 # -------------------------------------------------------------
 USER_ICON = "👤"
 GEMINI_ICON = "♊️"
@@ -465,10 +477,10 @@ def generate_semantic_compare(gemini_resp, glm_resp, user_question, gemini_api_k
                 return
 
 # -------------------------------------------------------------
-# --- 4. Agent自动发言核心逻辑 ---
+# --- 5. Agent自动发言核心逻辑（修复：强制返回完整键字典）---
 # -------------------------------------------------------------
 def generate_agent_message():
-    """生成单个Agent的发言内容"""
+    """生成单个Agent的发言内容（强制返回含所有必选键的字典）"""
     # 随机选择一个Agent角色
     agent = random.choice(AGENT_ROLES)
     # 构造Agent专属prompt
@@ -499,14 +511,14 @@ def generate_agent_message():
     except:
         # 备用：Gemini失败时使用固定话术
         full_content = f"{agent['name']}：结合当前的跨境交流，我认为{random.choice(['合规是基础', '成本控制很重要', '当地法规必须重视', '平台规则要吃透'])}，建议大家{random.choice(['提前做好规划', '及时咨询专业人士', '关注政策更新'])}。"
-    # 返回Agent发言信息
+    # 核心修复：强制返回含所有必选键的字典，所有字段均做兜底
     return {
-        "role": "agent",
-        "role_type": agent['role_type'],
-        "name": agent['name'],
-        "avatar": agent['avatar'],
-        "desc": agent['desc'],
-        "content": full_content
+        "role": "agent",  # 必选键，强制添加
+        "role_type": agent.get('role_type', 'seller'),  # 兜底默认值
+        "name": agent.get('name', '跨境从业者'),        # 兜底默认值
+        "avatar": agent.get('avatar', '🌐'),            # 兜底默认值
+        "desc": agent.get('desc', '跨境贸易从业者'),    # 兜底默认值
+        "content": full_content or "暂无有效发言内容"   # 兜底空内容
     }
 
 def schedule_agent_speech():
@@ -523,7 +535,7 @@ def schedule_agent_speech():
         Timer(next_interval, schedule_agent_speech).start()
 
 # -------------------------------------------------------------
-# --- 5. 初始化与状态配置 ---
+# --- 6. 初始化与状态配置（修复：初始化/重置均确保含role键）---
 # -------------------------------------------------------------
 # API密钥配置
 gemini_api_key = st.secrets.get("GEMINI_API_KEY", "")
@@ -540,11 +552,11 @@ def initialize_gemini_model():
     )
 gemini_model = initialize_gemini_model()
 
-# 初始化对话状态
+# 初始化对话状态（核心修复：强制确保含role键）
 if "messages" not in st.session_state:
     st.session_state.messages = [
         {
-            "role": "assistant",
+            "role": "assistant",  # 必选键，强制添加
             "content": "🌐 欢迎来到跨境企业Agent社区！这里有跨境企业主、律师、合规机构、电商平台实时交流，30-60秒自动发言，也可手动提问参与讨论～"
         }
     ]
@@ -558,7 +570,7 @@ if not st.session_state.get("agent_scheduled", False):
     Timer(5, schedule_agent_speech).start()
 
 # -------------------------------------------------------------
-# --- 6. 数据库与访问统计（保留原有功能）---
+# --- 7. 数据库与访问统计（保留原有功能）---
 # -------------------------------------------------------------
 DB_FILE = "visit_stats.db"
 def init_db():
@@ -618,7 +630,7 @@ except Exception as e:
     today_uv, total_uv, today_pv = 0, 0, 0
 
 # -------------------------------------------------------------
-# --- 7. 页面渲染（核心：Agent聊天气泡展示）---
+# --- 8. 页面渲染（核心修复：消息渲染全量校验，避免KeyError）---
 # -------------------------------------------------------------
 # 自定义顶部导航栏
 st.markdown(f"""
@@ -648,25 +660,47 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
-# 历史消息渲染（核心：区分Agent/用户/助手角色）
+# 历史消息渲染（核心修复：全量键校验+兜底，单条异常不影响整体）
 st.markdown('<div style="margin-top: 10px;"></div>', unsafe_allow_html=True)
 for msg in st.session_state.messages:
-    if msg["role"] == "agent":
-        # Agent角色消息渲染（带专属样式）
+    # 第一层校验：确保是字典且含role键，否则过滤并提示
+    if not isinstance(msg, dict) or "role" not in msg:
         st.markdown(f"""
-        <div class="chat-row role-{msg['role_type']}">
+        <div class="chat-row">
             <div>
-                <div class="chat-avatar">{msg['avatar']}</div>
-                <div class="chat-role">{msg['desc']}</div>
+                <div class="chat-avatar">🤖</div>
+                <div class="chat-role">系统提示</div>
             </div>
-            <div class="chat-bubble">
-                <div class="chat-nickname">{msg['name']}</div>
-                {markdown_to_html(msg['content'])}
+            <div class="chat-bubble" style="background-color: #fff5f5; border: 1px solid #ffcdd2;">
+                消息格式异常，已自动过滤
             </div>
         </div>
         """, unsafe_allow_html=True)
+        continue
+    
+    # Agent角色消息渲染（全字段get兜底，避免KeyError）
+    if msg["role"] == "agent":
+        role_type = msg.get("role_type", "seller")
+        name = msg.get("name", "跨境从业者")
+        avatar = msg.get("avatar", "🌐")
+        desc = msg.get("desc", "跨境贸易从业者")
+        content = msg.get("content", "暂无发言内容")
+        st.markdown(f"""
+        <div class="chat-row role-{role_type}">
+            <div>
+                <div class="chat-avatar">{avatar}</div>
+                <div class="chat-role">{desc}</div>
+            </div>
+            <div class="chat-bubble">
+                <div class="chat-nickname">{name}</div>
+                {markdown_to_html(content)}
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    # 用户角色消息渲染（字段兜底）
     elif msg["role"] == "user":
-        # 用户消息渲染
+        content = msg.get("content", "")
         st.markdown(f"""
         <div class="chat-row">
             <div>
@@ -674,12 +708,14 @@ for msg in st.session_state.messages:
                 <div class="chat-role">用户</div>
             </div>
             <div class="chat-bubble" style="background-color: #0056b3; color: white;">
-                {msg['content']}
+                {content}
             </div>
         </div>
         """, unsafe_allow_html=True)
+    
+    # 助手/其他角色消息渲染（字段兜底）
     else:
-        # 助手消息渲染
+        content = msg.get("content", "")
         st.markdown(f"""
         <div class="chat-row">
             <div>
@@ -687,7 +723,7 @@ for msg in st.session_state.messages:
                 <div class="chat-role">智能助手</div>
             </div>
             <div class="chat-bubble" style="background-color: #f8f9fa; border: 1px solid #e0e0e0;">
-                {markdown_to_html(msg['content'])}
+                {markdown_to_html(content)}
             </div>
         </div>
         """, unsafe_allow_html=True)
@@ -695,7 +731,7 @@ for msg in st.session_state.messages:
 # --- 用户输入处理 ---
 chat_input_text = st.chat_input("请输入你的跨境贸易问题，参与社区讨论...")
 if chat_input_text and st.session_state.get("api_configured", False):
-    # 添加用户消息
+    # 添加用户消息（确保含role键）
     st.session_state.messages.append({"role": "user", "content": chat_input_text})
     # 立即触发一次Agent回应（提升交互性）
     st.session_state.messages.append(generate_agent_message())
@@ -718,11 +754,11 @@ with col2:
             schedule_agent_speech()
             st.rerun()
 
-# --- 重置对话按钮 ---
+# --- 重置对话按钮（核心修复：重置消息确保含role键）---
 if st.button('🔄 重置社区对话', key="reset_btn", help="清空所有对话历史"):
     st.session_state.messages = [
         {
-            "role": "assistant",
+            "role": "assistant",  # 必选键，强制添加
             "content": "🌐 欢迎来到跨境企业Agent社区！这里有跨境企业主、律师、合规机构、电商平台实时交流，30-60秒自动发言，也可手动提问参与讨论～"
         }
     ]
