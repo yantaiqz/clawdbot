@@ -180,37 +180,46 @@ def get_system_prompt():
        {{"agent_id": "agent的ID", "content": "发言内容"}}
     """
 
+
 def generate_next_turn(history):
-    """调用 Gemini 生成下一句话"""
-    if not gemini_api_key: return None
+    """调用 Gemini 生成下一句话 (修复版)"""
+    if not gemini_api_key:
+        st.error("⚠️ 未配置 API Key，请检查 .streamlit/secrets.toml")
+        return None
     
+    # 1. 修正模型名称 (建议改回稳定的 1.5-flash 或 pro)
     model = genai.GenerativeModel(
-        model_name='gemini-2.5-flash',
+        model_name='gemini-1.5-flash', # <--- 建议改为 1.5 以保证稳定性
         system_instruction=get_system_prompt(),
         generation_config={"response_mime_type": "application/json"}
     )
     
-    # --- 修复部分开始 ---
-    # 构建上下文 (使用 .get() 防止 KeyError，兼容旧数据)
+    # 2. 构建上下文 (兼容旧数据的防崩坏写法)
     history_lines = []
     for msg in history[-12:]:
-        # 如果找不到 role_name，就默认显示 'Unknown'
         role = msg.get('role_name', 'Unknown')
         content = msg.get('content', '')
         history_lines.append(f"[{role}]: {content}")
-    
     history_text = "\n".join(history_lines)
-    # --- 修复部分结束 ---
 
     prompt = f"当前对话历史：\n{history_text}\n\n请生成下一条发言（请优先选择之前发言较少或与当前话题最相关的角色）："
     
     try:
         response = model.generate_content(prompt)
-        result = json.loads(response.text)
+        raw_text = response.text
+        
+        # 3. 核心修复：清洗 JSON 格式 (去除 markdown 符号)
+        # 很多时候模型会返回 ```json { ... } ```，导致直接解析失败
+        clean_json = raw_text.replace("```json", "").replace("```", "").strip()
+        
+        result = json.loads(clean_json)
         return result
-    except Exception as e:
-        return None
 
+    except Exception as e:
+        # 4. 显示具体错误，不再静默失败
+        st.toast(f"生成失败，正在重试... 错误: {str(e)}", icon="⚠️")
+        print(f"DEBUG Error: {e}") # 在后台打印详细日志
+        return None
 # -------------------------------------------------------------
 # --- 4. 状态管理 ---
 # -------------------------------------------------------------
@@ -321,12 +330,14 @@ if st.session_state.simulation_active:
     
     status_placeholder.empty()
 
+ 
+    
     # 2. 生成新对话
     new_turn = generate_next_turn(st.session_state.messages)
     
     if new_turn:
+        # ... (原有逻辑保持不变) ...
         agent_id = new_turn.get("agent_id")
-        # 容错：如果ID不存在，随机分配一个
         if agent_id not in AGENTS:
             agent_id = random.choice(list(AGENTS.keys()))
         
@@ -335,10 +346,11 @@ if st.session_state.simulation_active:
             "role_name": AGENTS[agent_id]["name"],
             "content": new_turn.get("content")
         })
-        
-        # 3. 刷新页面 -> 触发JS滚动 -> 显示新消息
         st.rerun()
-
+    else:
+        # === 新增：如果生成失败，停止模拟，避免死循环空转 ===
+        st.session_state.simulation_active = False # 暂停模拟
+        st.error("生成回复失败，模拟已暂停。请检查 API Key 或网络连接后重新开始。")
 # -------------------------------------------------------------
 # --- 7. 访客统计 ---
 # -------------------------------------------------------------
