@@ -190,8 +190,18 @@ def generate_next_turn(history):
         generation_config={"response_mime_type": "application/json"}
     )
     
-    # 构建上下文 (保留最近12条以保持连贯性)
-    history_text = "\n".join([f"[{msg['role_name']}]: {msg['content']}" for msg in history[-12:]]) 
+    # --- 修复部分开始 ---
+    # 构建上下文 (使用 .get() 防止 KeyError，兼容旧数据)
+    history_lines = []
+    for msg in history[-12:]:
+        # 如果找不到 role_name，就默认显示 'Unknown'
+        role = msg.get('role_name', 'Unknown')
+        content = msg.get('content', '')
+        history_lines.append(f"[{role}]: {content}")
+    
+    history_text = "\n".join(history_lines)
+    # --- 修复部分结束 ---
+
     prompt = f"当前对话历史：\n{history_text}\n\n请生成下一条发言（请优先选择之前发言较少或与当前话题最相关的角色）："
     
     try:
