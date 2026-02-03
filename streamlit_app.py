@@ -189,7 +189,7 @@ def generate_next_turn(history):
     
     # 1. 修正模型名称 (建议改回稳定的 1.5-flash 或 pro)
     model = genai.GenerativeModel(
-        model_name='gemini-1.5-flash', # <--- 建议改为 1.5 以保证稳定性
+        model_name='gemini-2.5-flash', # <--- 建议改为 1.5 以保证稳定性
         system_instruction=get_system_prompt(),
         generation_config={"response_mime_type": "application/json"}
     )
