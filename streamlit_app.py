@@ -1,6 +1,5 @@
 import streamlit as st
 import streamlit.components.v1 as components
-from zhipuai import ZhipuAI  # 引入智谱SDK
 import datetime
 import time
 import re
