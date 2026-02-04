@@ -1,6 +1,6 @@
-from zhipuai import ZhipuAI
 import streamlit as st
 import streamlit.components.v1 as components
+import google.generativeai as genai
 import datetime
 import time
 import re
@@ -14,7 +14,7 @@ import random
 # -------------------------------------------------------------
 
 st.set_page_config(
-    page_title="全球合规风云 | GLM Agent Sim", 
+    page_title="全球合规风云 | Gemini Agent Sim", 
     page_icon="🌏", 
     layout="wide",
     initial_sidebar_state="collapsed"
@@ -122,21 +122,15 @@ st.markdown("""
         box-shadow: 0 1px 2px rgba(0,0,0,0.05);
         border: 1px solid rgba(0,0,0,0.05);
     }
-    .control-panel {
-        position: fixed; bottom: 0; left: 0; width: 100%;
-        background: white; padding: 15px; border-top: 1px solid #ddd;
-        display: flex; justify-content: center; gap: 15px; z-index: 1000;
-        box-shadow: 0 -2px 10px rgba(0,0,0,0.05);
-    }
     .metric-container { display: flex; gap: 15px; justify-content: center; margin: 20px 0; font-size: 0.8rem; color: #888; }
 </style>
 """, unsafe_allow_html=True)
 
 # -------------------------------------------------------------
-# --- 3. 核心逻辑 (GLM-4 版本) ---
+# --- 3. 核心逻辑 (Gemini 版本) ---
 # -------------------------------------------------------------
 
-glm_api_key = st.secrets.get("GLM_API_KEY", "") # 获取智谱API Key
+gemini_api_key = st.secrets.get("GEMINI_API_KEY", "")
 
 def get_system_prompt():
     agents_desc = "\n".join([f"- ID: {k}, 名称: {v['name']}, 角色: {v['role']}, 人设: {v['desc']}" for k, v in AGENTS.items()])
@@ -149,18 +143,22 @@ def get_system_prompt():
     2. 生成该角色的发言内容。内容必须简短有力（50-100字），符合其人设和利益立场。
     3. 话题必须围绕跨境出海的痛点：资金合规、税务稽查、知识产权、物流灰关、本地化壁垒等。
     4. 偶尔可以发生争论。
-    5. **严格仅输出 JSON 格式**，格式如下（不要包裹Markdown）：
+    5. **严格仅输出 JSON 格式**，格式如下（不要包裹 Markdown 代码块）：
        {{"agent_id": "agent的ID", "content": "发言内容"}}
     """
 
 def generate_next_turn(history):
-    """调用 ZhipuAI GLM-4 生成下一句话"""
-    if not glm_api_key:
-        st.error("⚠️ 未配置 GLM_API_KEY，请检查 .streamlit/secrets.toml")
+    """调用 Google Gemini 生成下一句话"""
+    if not gemini_api_key:
+        st.error("⚠️ 未配置 GEMINI_API_KEY，请检查 .streamlit/secrets.toml")
         return None
     
-    # 初始化客户端
-    client = ZhipuAI(api_key=glm_api_key)
+    # 初始化 Gemini
+    genai.configure(api_key=gemini_api_key)
+    model = genai.GenerativeModel(
+        model_name='gemini-1.5-flash',
+        system_instruction=get_system_prompt()
+    )
     
     # 构建上下文
     history_lines = []
@@ -173,22 +171,13 @@ def generate_next_turn(history):
     user_prompt = f"当前对话历史：\n{history_text}\n\n请生成下一条发言（优先选择相关性高或未发言的角色）："
     
     try:
-        # 使用 GLM-4-Flash (速度快，适合Agent模拟)
-        response = client.chat.completions.create(
-            model="glm-4-flash", 
-            messages=[
-                {"role": "system", "content": get_system_prompt()},
-                {"role": "user", "content": user_prompt}
-            ],
-            temperature=0.7,
-            top_p=0.8
+        # 使用 json mode 强制返回 JSON
+        response = model.generate_content(
+            user_prompt,
+            generation_config={"response_mime_type": "application/json"}
         )
         
-        raw_text = response.choices[0].message.content
-        
-        # 清洗 JSON
-        clean_json = raw_text.replace("```json", "").replace("```", "").strip()
-        result = json.loads(clean_json)
+        result = json.loads(response.text)
         return result
 
     except Exception as e:
@@ -217,10 +206,10 @@ if len(st.session_state.messages) == 0:
 # --- 5. 页面渲染 & 自动滚动 JS ---
 # -------------------------------------------------------------
 
-st.markdown("""
+st.markdown(f"""
 <div class="nav-bar">
-    <div class="logo-text">🌏 Global Compliance | GLM Agent Sim</div>
-    <div style="font-size:0.8rem; color:#003567;">● Powered by ZhipuAI</div>
+    <div class="logo-text">🌏 Global Compliance | Gemini Agent Sim</div>
+    <div style="font-size:0.8rem; color:#003567;">● Powered by Google Gemini</div>
 </div>
 """, unsafe_allow_html=True)
 
@@ -275,7 +264,7 @@ with control_container:
                 st.session_state.simulation_active = False
                 st.rerun()
         else:
-            if st.button("▶️ 开始 GLM 驱动模拟", use_container_width=True, type="primary"):
+            if st.button("▶️ 开始 Gemini 驱动模拟", use_container_width=True, type="primary"):
                 st.session_state.simulation_active = True
                 st.rerun()
 
@@ -310,7 +299,7 @@ if st.session_state.simulation_active:
 # --- 7. 访客统计 ---
 # -------------------------------------------------------------
 
-DB_FILE = "visit_stats_glm.db"
+DB_FILE = "visit_stats_gemini.db"
 
 def track_and_get_stats():
     try:
