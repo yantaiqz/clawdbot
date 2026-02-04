@@ -153,9 +153,8 @@ def get_system_prompt():
     【任务】：根据对话历史，选择最适合的角色生成下一条发言，发言50-80字，符合角色人设，围绕跨境合规痛点。
     【输出格式】：{{"agent_id":"角色ID","content":"发言内容"}}
     """
-
 def generate_next_turn(history):
-    """★ 修改2：移除无效mime_type + 增强清洗 + 保留调试"""
+    """修复：Gemini参数格式（纯文本拼接）+ 增强JSON清洗 + 调试提示"""
     if not gemini_model:
         st.toast("⚠️ Gemini模型未初始化，请检查API Key", icon="❌")
         return None
@@ -170,30 +169,25 @@ def generate_next_turn(history):
     user_prompt = f"当前对话历史：\n{history_text}\n\n生成下一条发言（严格遵守输出规则）"
     
     try:
-        # ★ 关键修改：移除无效的generation_config（response_mime_type不生效）
+        # ✅ 核心修复：Gemini标准格式 - 纯文本字符串拼接（系统提示词+用户提示词）
         response = gemini_model.generate_content(
-            [
-                {"role": "system", "content": get_system_prompt()},
-                {"role": "user", "content": user_prompt}
-            ],
+            f"{get_system_prompt()}\n\n{user_prompt}",
             temperature=0.8,
             top_p=0.9
         )
-        response.resolve()
+        response.resolve()  # 确保获取完整响应
         raw_text = response.text.strip()
         st.toast(f"Gemini原始输出: {raw_text[:50]}", icon="ℹ️") # 保留调试，查看真实输出
 
-        # ★ 修改3：增强版JSON清洗逻辑（新增空白字符/单引号处理）
-        clean_text = raw_text
-        # 1. 移除代码块和多余标记
-        clean_text = clean_text.replace("```json", "").replace("```", "").strip()
-        # 2. 截取核心JSON对象（{}之间）
+        # 增强版JSON清洗逻辑（保留之前的优化，兼容各种不规则输出）
+        clean_text = raw_text.replace("```json", "").replace("```", "").strip()
+        # 截取{}之间的核心JSON对象
         start_idx = clean_text.find("{")
         end_idx = clean_text.rfind("}")
         if start_idx == -1 or end_idx == -1:
             raise ValueError("未检测到有效JSON对象（无{}）")
         clean_json = clean_text[start_idx:end_idx+1]
-        # 3. 批量替换非法字符（中文符号+单引号+多余空格）
+        # 批量替换非法字符，统一为标准JSON格式
         clean_json = clean_json.replace("：", ":")\
                               .replace("，", ",")\
                               .replace("“", "\"")\
@@ -201,15 +195,14 @@ def generate_next_turn(history):
                               .replace("'", "\"")\
                               .replace("\n", "")\
                               .replace("\t", "")
-        # 4. 清理键值对前后多余空格（如 "agent_id" : "seller" → "agent_id":"seller"）
+        # 清理键值对前后多余空格（如 "agent_id" : "seller" → "agent_id":"seller"）
         clean_json = re.sub(r'\s*:\s*', ':', clean_json)
         clean_json = re.sub(r'\s*,\s*', ',', clean_json)
 
-        # 解析并校验JSON
+        # 解析并严格校验JSON
         result = json.loads(clean_json)
-        # 强制校验核心字段（非空+agent_id存在）
         if not result.get("agent_id") or not result.get("content") or result["agent_id"] not in AGENTS:
-            raise ValueError(f"JSON字段无效（agent_id不存在/内容为空），当前值：{result}")
+            raise ValueError(f"JSON字段无效，当前值：{result}")
 
         st.toast(f"✅ JSON解析成功！发言人：{AGENTS[result['agent_id']]['name']}", icon="✅")
         return result
@@ -219,7 +212,7 @@ def generate_next_turn(history):
     except Exception as e:
         st.toast(f"❌ 生成失败：{str(e)[:40]}", icon="⚠️")
 
-    # 降级机制（保留，仅作为最终兜底）
+    # 最终兜底降级机制（仅极端情况触发）
     fallback_agent_id = random.choice(list(AGENTS.keys()))
     fallback_contents = {
         "seller": "最近平台审核越来越严了，大家有没有什么低成本的合规方案分享一下？",
