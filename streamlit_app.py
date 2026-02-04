@@ -141,9 +141,8 @@ st.markdown("""
     .metric-container { display: flex; gap: 15px; justify-content: center; margin: 20px 0; font-size: 0.8rem; color: #888; }
 </style>
 """, unsafe_allow_html=True)
-
 # -------------------------------------------------------------
-# --- 4. 核心逻辑 (Gemini 版本，替换原GLM逻辑) ---
+# --- 4. 核心逻辑 (Gemini 修复版) ---
 # -------------------------------------------------------------
 def get_system_prompt():
     """生成Gemini系统提示词，保留原有角色规则"""
@@ -153,18 +152,25 @@ def get_system_prompt():
     {agents_desc}
 
     **任务规则：**
-    1. 根据上下文历史，决定**下一个最应该发言的角色**是谁。
-    2. 生成该角色的发言内容。内容必须简短有力（50-100字），符合其人设和利益立场。
-    3. 话题必须围绕跨境出海的痛点：资金合规、税务稽查、知识产权、物流灰关、本地化壁垒等。
-    4. 偶尔可以发生争论，让对话更真实。
-    5. **严格仅输出 JSON 格式**，不要包含任何Markdown标记、代码块、解释性文字，格式如下：
-       {{"agent_id": "agent的ID", "content": "发言内容"}}
+    1. 根据上下文历史，决定下一个最应该发言的角色。
+    2. 生成该角色的发言内容（50-100字），符合其人设。
+    3. 话题围绕跨境出海痛点。
+    4. 必须输出 JSON。格式如下：
+    {{"agent_id": "agent的ID", "content": "发言内容"}}
     """
+
 def generate_next_turn(history):
-    """调用Gemini生成下一句Agent发言，增强JSON解析容错性，增加降级兜底"""
-    if not gemini_model:
-        st.toast("⚠️ Gemini模型未初始化，请检查API Key", icon="❌")
+    """调用Gemini生成下一句Agent发言"""
+    if not gemini_api_key:
+        st.toast("⚠️ Gemini API Key 未配置", icon="❌")
         return None
+    
+    # 修正点 1: 使用正确的模型名称 (1.5-flash 是目前最稳的)
+    # 修正点 2: 建议将 System Instruction 放在初始化中
+    model = genai.GenerativeModel(
+        model_name="gemini-1.5-flash",
+        system_instruction=get_system_prompt()
+    )
     
     # 构建对话历史上下文
     history_lines = []
@@ -177,38 +183,24 @@ def generate_next_turn(history):
     user_prompt = f"当前对话历史：\n{history_text}\n\n请生成下一条发言。"
     
     try:
-        response = gemini_model.generate_content(
-            [
-                {"role": "system", "content": get_system_prompt()},
-                {"role": "user", "content": user_prompt}
-            ],
-            temperature=0.8,  # 提高随机性
-            top_p=0.9,
-            # 关键设置：强制要求只输出JSON，不输出其他内容
+        # 修正点 3: 简化的调用方式，配合 GenerationConfig
+        response = model.generate_content(
+            user_prompt,
             generation_config=genai.types.GenerationConfig(
-                response_mime_type="application/json"
+                response_mime_type="application/json",
+                temperature=0.8,
+                top_p=0.9,
             )
         )
-        response.resolve()
-        raw_text = response.text.strip()
-        st.toast(f"原始响应: {raw_text[:30]}...", icon="ℹ️") # 调试用，可删除
-
-        # ========== 超强容错清洗逻辑 ==========
-        # 1. 移除所有代码块标记
-        clean_text = raw_text.replace("```json", "").replace("```", "").strip()
-        # 2. 移除首尾的非JSON字符（如Gemini可能加的"好的，这是JSON："）
-        # 找到第一个 { 和最后一个 }
-        start_idx = clean_text.find("{")
-        end_idx = clean_text.rfind("}")
-        if start_idx == -1 or end_idx == -1:
-            raise ValueError("未找到有效的JSON对象")
-        clean_json = clean_text[start_idx:end_idx+1]
         
-        # 3. 替换中文符号为英文符号（常见错误）
-        clean_json = clean_json.replace("：", ":").replace("，", ",").replace("“", "\"").replace("”", "\"")
+        # 修正点 4: 检查结果是否存在
+        if not response.text:
+            raise ValueError("Empty response")
+            
+        raw_text = response.text.strip()
         
         # 解析JSON
-        result = json.loads(clean_json)
+        result = json.loads(raw_text)
 
         # 校验必要字段
         if not result.get("agent_id") or not result.get("content"):
@@ -216,32 +208,30 @@ def generate_next_turn(history):
 
         return result
 
-    except json.JSONDecodeError as e:
-        st.toast(f"JSON解析失败，触发降级逻辑: {str(e)[:30]}", icon="⚠️")
     except Exception as e:
-        st.toast(f"生成失败，触发降级逻辑: {str(e)[:30]}", icon="⚠️")
+        # 仅在调试时打开，生产环境可换成 st.toast
+        print(f"Gemini API Error: {e}") 
+        st.toast(f"API 异常: {str(e)[:20]}...", icon="⚠️")
 
-    # ========== 降级机制：如果失败，随机生成一条合理的回复 ==========
-    # 随机选一个角色
+    # ========== 降级机制 (保持不变) ==========
     fallback_agent_id = random.choice(list(AGENTS.keys()))
-    fallback_agent = AGENTS[fallback_agent_id]
-    
-    # 根据角色预设一些通用的兜底话术
     fallback_contents = {
-        "seller": "最近平台审核越来越严了，大家有没有什么低成本的合规方案分享一下？",
-        "legal_inhouse": "建议先自查一下数据合规和知识产权，很多TRO都是因为前期风控没做好。",
-        "platform": "请各位卖家严格遵守平台规则，近期正在进行专项整治，违规账号将被限流。",
-        "lawyer_us": "美国市场的知识产权风险最高，特别是商标和外观设计，一定要提前布局。",
-        "regulator_eu": "欧盟的VAT和GDPR是两道红线，建议定期进行合规审计，避免高额罚款。",
-        "logistics_sea": "东南亚物流现在最大的问题是最后一公里，建议找本地有资质的合作伙伴。",
-        "cpa_hk": "资金回流尽量走正规渠道，香港账户现在对贸易背景审核很严格，切勿触碰红线。",
-        "partner_me": "中东市场本地化是关键，除了保人制度，文化习俗和宗教信仰也必须尊重。"
+        "seller": "最近平台审核越来越严了，大家有没有什么经验？",
+        "legal_inhouse": "建议先自查风险，合规才是长久之计。",
+        "platform": "请各位严格遵守规则，以免影响店铺运营。",
+        "lawyer_us": "美国站的知识产权风险一定要重视。",
+        "regulator_eu": "欧盟VAT最近查得很凶，别抱侥幸心理。",
+        "logistics_sea": "东南亚清关最近变慢了，大家提前做好准备。",
+        "cpa_hk": "审计报税要按时，离岸账户被查就麻烦了。",
+        "partner_me": "中东市场本地保人合作一定要选靠谱的。"
     }
 
     return {
         "agent_id": fallback_agent_id,
-        "content": fallback_contents.get(fallback_agent_id, "大家好，我是" + fallback_agent["name"] + "，很高兴参与今天的讨论。")
+        "content": fallback_contents.get(fallback_agent_id, "同步中...")
     }
+
+
 # -------------------------------------------------------------
 # --- 5. 状态管理（保留原有逻辑，无修改）---
 # -------------------------------------------------------------
