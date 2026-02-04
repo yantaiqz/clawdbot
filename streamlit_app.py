@@ -27,11 +27,7 @@ gemini_api_key = st.secrets.get("GEMINI_API_KEY", "")
 if gemini_api_key:
     genai.configure(api_key=gemini_api_key)
     # 初始化Gemini模型（选用flash版本，兼顾速度和效果，适合Agent模拟）
-    gemini_model = genai.GenerativeModel(
-        model_name="gemini-2.5-flash",
-        temperature=0.7,  # 保持随机性，适配角色争论和多样发言
-        top_p=0.8
-    )
+    gemini_model = genai.GenerativeModel(model_name="gemini-2.5-flash" )
 else:
     gemini_model = None
     st.error("⚠️ 未配置 Gemini_API_KEY，请检查 .streamlit/secrets.toml 配置")
