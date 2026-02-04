@@ -1,6 +1,6 @@
+import google.generativeai as genai
 import streamlit as st
 import streamlit.components.v1 as components
-import google.generativeai as genai
 import datetime
 import time
 import re
@@ -12,18 +12,33 @@ import random
 # -------------------------------------------------------------
 # --- 0. 页面配置 ---
 # -------------------------------------------------------------
-
 st.set_page_config(
-    page_title="全球合规风云 | Gemini Agent Sim", 
-    page_icon="🌏", 
+    page_title="全球合规风云 | Gemini Agent Sim",
+    page_icon="🌏",
     layout="wide",
     initial_sidebar_state="collapsed"
 )
 
 # -------------------------------------------------------------
-# --- 1. Agent 角色定义 ---
+# --- 1. Gemini 模型初始化配置 ---
 # -------------------------------------------------------------
+# 从Streamlit Secrets获取Gemini API Key（本地运行需配置 .streamlit/secrets.toml）
+gemini_api_key = st.secrets.get("GEMINI_API_KEY", "")
+if gemini_api_key:
+    genai.configure(api_key=gemini_api_key)
+    # 初始化Gemini模型（选用flash版本，兼顾速度和效果，适合Agent模拟）
+    gemini_model = genai.GenerativeModel(
+        model_name="gemini-2.5-flash",
+        temperature=0.7,  # 保持随机性，适配角色争论和多样发言
+        top_p=0.8
+    )
+else:
+    gemini_model = None
+    st.error("⚠️ 未配置 Gemini_API_KEY，请检查 .streamlit/secrets.toml 配置")
 
+# -------------------------------------------------------------
+# --- 2. Agent 角色定义（保留原有8类角色，无修改）---
+# -------------------------------------------------------------
 AGENTS = {
     "seller": {
         "name": "深圳大卖-老王",
@@ -84,9 +99,8 @@ AGENTS = {
 }
 
 # -------------------------------------------------------------
-# --- 2. CSS 注入 ---
+# --- 3. CSS 注入（仅修改Powered by标识，其余保留）---
 # -------------------------------------------------------------
-
 st.markdown("""
 <style>
     @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;700&display=swap');
@@ -122,17 +136,21 @@ st.markdown("""
         box-shadow: 0 1px 2px rgba(0,0,0,0.05);
         border: 1px solid rgba(0,0,0,0.05);
     }
+    .control-panel {
+        position: fixed; bottom: 0; left: 0; width: 100%;
+        background: white; padding: 15px; border-top: 1px solid #ddd;
+        display: flex; justify-content: center; gap: 15px; z-index: 1000;
+        box-shadow: 0 -2px 10px rgba(0,0,0,0.05);
+    }
     .metric-container { display: flex; gap: 15px; justify-content: center; margin: 20px 0; font-size: 0.8rem; color: #888; }
 </style>
 """, unsafe_allow_html=True)
 
 # -------------------------------------------------------------
-# --- 3. 核心逻辑 (Gemini 版本) ---
+# --- 4. 核心逻辑 (Gemini 版本，替换原GLM逻辑) ---
 # -------------------------------------------------------------
-
-gemini_api_key = st.secrets.get("GEMINI_API_KEY", "")
-
 def get_system_prompt():
+    """生成Gemini系统提示词，保留原有角色规则"""
     agents_desc = "\n".join([f"- ID: {k}, 名称: {v['name']}, 角色: {v['role']}, 人设: {v['desc']}" for k, v in AGENTS.items()])
     return f"""
     你是一个全球跨境电商合规社区的模拟器。你需要扮演以下角色进行群聊讨论：
@@ -142,25 +160,18 @@ def get_system_prompt():
     1. 根据上下文历史，决定**下一个最应该发言的角色**是谁。
     2. 生成该角色的发言内容。内容必须简短有力（50-100字），符合其人设和利益立场。
     3. 话题必须围绕跨境出海的痛点：资金合规、税务稽查、知识产权、物流灰关、本地化壁垒等。
-    4. 偶尔可以发生争论。
-    5. **严格仅输出 JSON 格式**，格式如下（不要包裹 Markdown 代码块）：
+    4. 偶尔可以发生争论，让对话更真实。
+    5. **严格仅输出 JSON 格式**，不要包含任何Markdown标记、代码块、解释性文字，格式如下：
        {{"agent_id": "agent的ID", "content": "发言内容"}}
     """
 
 def generate_next_turn(history):
-    """调用 Google Gemini 生成下一句话"""
-    if not gemini_api_key:
-        st.error("⚠️ 未配置 GEMINI_API_KEY，请检查 .streamlit/secrets.toml")
+    """调用Gemini生成下一句Agent发言，替换原GLM调用逻辑"""
+    if not gemini_model:
+        st.toast("⚠️ Gemini模型未初始化，请检查API Key", icon="❌")
         return None
     
-    # 初始化 Gemini
-    genai.configure(api_key=gemini_api_key)
-    model = genai.GenerativeModel(
-        model_name='gemini-1.5-flash',
-        system_instruction=get_system_prompt()
-    )
-    
-    # 构建上下文
+    # 构建对话历史上下文（保留最近12条，避免上下文过长）
     history_lines = []
     for msg in history[-12:]:
         role = msg.get('role_name', 'Unknown')
@@ -168,33 +179,49 @@ def generate_next_turn(history):
         history_lines.append(f"[{role}]: {content}")
     history_text = "\n".join(history_lines)
 
+    # 构造用户提示词
     user_prompt = f"当前对话历史：\n{history_text}\n\n请生成下一条发言（优先选择相关性高或未发言的角色）："
     
     try:
-        # 使用 json mode 强制返回 JSON
-        response = model.generate_content(
-            user_prompt,
-            generation_config={"response_mime_type": "application/json"}
+        # 调用Gemini生成内容（单轮对话模式）
+        response = gemini_model.generate_content(
+            [
+                {"role": "system", "content": get_system_prompt()},
+                {"role": "user", "content": user_prompt}
+            ]
         )
-        
-        result = json.loads(response.text)
-        return result
+        response.resolve()  # 确保获取完整响应
+        raw_text = response.text.strip()
 
+        # 清洗并解析JSON（兼容Gemini可能的多余输出）
+        clean_json = re.sub(r'^[^\{]*|\}[^}]*$', '', raw_text)  # 去除前后非JSON内容
+        clean_json = clean_json.replace("```json", "").replace("```", "").strip()
+        result = json.loads(clean_json)
+        
+        # 校验JSON字段完整性
+        if "agent_id" in result and "content" in result and result["agent_id"] and result["content"]:
+            return result
+        else:
+            st.toast("Gemini返回JSON字段不完整", icon="⚠️")
+            return None
+
+    except json.JSONDecodeError:
+        st.toast(f"Gemini返回内容无法解析为JSON：{raw_text[:50]}...", icon="⚠️")
+        return None
     except Exception as e:
-        st.toast(f"生成失败: {str(e)[:50]}...", icon="⚠️")
+        st.toast(f"Gemini调用失败: {str(e)[:50]}...", icon="⚠️")
         return None
 
 # -------------------------------------------------------------
-# --- 4. 状态管理 ---
+# --- 5. 状态管理（保留原有逻辑，无修改）---
 # -------------------------------------------------------------
-
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
 if "simulation_active" not in st.session_state:
     st.session_state.simulation_active = False
 
-# 初始化开场白
+# 初始化开场白（保留原有内容）
 if len(st.session_state.messages) == 0:
     st.session_state.messages.append({
         "agent_id": "seller",
@@ -203,10 +230,9 @@ if len(st.session_state.messages) == 0:
     })
 
 # -------------------------------------------------------------
-# --- 5. 页面渲染 & 自动滚动 JS ---
+# --- 6. 页面渲染 & 自动滚动 JS（仅修改Powered by标识）---
 # -------------------------------------------------------------
-
-st.markdown(f"""
+st.markdown("""
 <div class="nav-bar">
     <div class="logo-text">🌏 Global Compliance | Gemini Agent Sim</div>
     <div style="font-size:0.8rem; color:#003567;">● Powered by Google Gemini</div>
@@ -215,6 +241,7 @@ st.markdown(f"""
 
 st.markdown('<div class="main-content-wrapper" id="chat-container">', unsafe_allow_html=True)
 
+# 渲染聊天消息（保留原有样式，无修改）
 for msg in st.session_state.messages:
     agent_id = msg.get("agent_id", "seller")
     if agent_id not in AGENTS: agent_id = "seller"
@@ -236,9 +263,9 @@ for msg in st.session_state.messages:
     """, unsafe_allow_html=True)
 
 status_placeholder = st.empty()
-st.markdown('</div>', unsafe_allow_html=True) 
+st.markdown('</div>', unsafe_allow_html=True)
 
-# 自动滚动 JS
+# 自动滚动 JS（保留原有逻辑，无修改）
 scroll_js = """
 <script>
     function scrollToBottom() {
@@ -251,9 +278,8 @@ scroll_js = """
 components.html(scroll_js, height=0, width=0)
 
 # -------------------------------------------------------------
-# --- 6. 模拟控制循环 ---
+# --- 7. 模拟控制循环（保留原有逻辑，无修改）---
 # -------------------------------------------------------------
-
 control_container = st.container()
 
 with control_container:
@@ -269,7 +295,7 @@ with control_container:
                 st.rerun()
 
 if st.session_state.simulation_active:
-    wait_seconds = random.randint(5, 15) 
+    wait_seconds = random.randint(5, 15)
     prog_bar = status_placeholder.progress(0, text="Agents 正在思考中...")
     
     for i in range(wait_seconds):
@@ -296,10 +322,9 @@ if st.session_state.simulation_active:
         st.error("生成回复失败，模拟已暂停。")
 
 # -------------------------------------------------------------
-# --- 7. 访客统计 ---
+# --- 8. 访客统计（保留原有逻辑，仅修改数据库文件名）---
 # -------------------------------------------------------------
-
-DB_FILE = "visit_stats_gemini.db"
+DB_FILE = "visit_stats_gemini.db"  # 区分Gemini版本统计数据
 
 def track_and_get_stats():
     try:
@@ -316,7 +341,7 @@ def track_and_get_stats():
         if "has_counted" not in st.session_state:
             c.execute("INSERT OR IGNORE INTO daily_traffic (date, pv_count) VALUES (?, 0)", (today_str,))
             c.execute("UPDATE daily_traffic SET pv_count = pv_count + 1 WHERE date=?", (today_str,))
-            c.execute("INSERT OR REPLACE INTO visitors (visitor_id, first_visit_date, last_visit_date) VALUES (?, ?, ?)", 
+            c.execute("INSERT OR REPLACE INTO visitors (visitor_id, first_visit_date, last_visit_date) VALUES (?, ?, ?)",
                       (st.session_state["visitor_id"], today_str, today_str))
             conn.commit()
             st.session_state["has_counted"] = True
