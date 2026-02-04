@@ -162,8 +162,8 @@ def generate_next_turn(history):
     # 使用 1.5-flash，速度快且稳定
     model = genai.GenerativeModel(
         # model_name="gemini-2.5-flash",
-        
-        model_name='gemini-1.5-flash-latest', 
+       
+        model_name='gemini-2.0-flash', 
 
         system_instruction=get_system_prompt()
     )
